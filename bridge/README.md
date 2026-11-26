@@ -1,127 +1,145 @@
-# Calix GPON ONT Bridge & Anti-OMCI Tool 🚀
+# [Инструкция] Перевод Calix 813Gv2 / 812G (Казахтелеком GPON) в мост (Bridge) без сбросов OMCI и с рабочей SIP-телефонией
 
-> **Комплексное решение для перевода оптических терминалов Calix (813Gv2-1, 813Gv2-2, 812G и др.) в прозрачный режим Bridge (мост) без сбросов со стороны провайдера (Казахтелеком и др.) и с сохранением SIP-телефонии.**
+Приветствую всех владельцев ONT-терминалов **Calix (813Gv2-1, 813Gv2-2, 812G и аналогичных на платформе Luna SDK / Realtek RTL960x)** от Казахтелекома.
 
-[![Platform](https://img.shields.io/badge/Platform-Calix%20Luna%20SDK%20%7C%20Realtek%20RTL960x-blue.svg)](#)
-[![ISP](https://img.shields.io/badge/Tested%20ISP-Kazakhtelecom%20(VLAN%2040)-green.svg)](#)
-[![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](#)
+Многие годами пытались перевести этот модем в мост (Bridge), чтобы за ним поставить свой нормальный роутер (Keenetic, Mikrotik, OpenWrt, сервер) и забыть про тройной NAT и зависания. Но каждый раз происходило одно и то же:
+1. В админке пункт **«Layer 2 Bridged»** скрыт для основного подключения интернета (VLAN 40).
+2. Если как-то удавалось создать мост через CLI, то ровно через 2–5 минут Казахтелеком через TR-069 или OMCI MIB audit **намертво сбрасывал всё обратно в Route** либо ломал телефонию.
+
+Мы провели полный реверс-инжиниринг прошивки Calix, демонов `cwmpmain`, `omcimain`, скриптов `cmd_dispatcher` и веб-морды. Ниже — готовое решение: скрипт-патч, который лечит админку и защищает терминал от перезаписи провайдером.
 
 ---
 
-## ⚡ Быстрая установка (One-Liner)
+## Что делает патч:
+1. **Разблокирует «Layer 2 Bridged» в родной админке Calix:**
+   - В файле веб-интерфейса убран захардкоженный запрет на показ кнопки моста для основного подключения (`is_dcs=1`).
+   - В CGI-обработчике снята блокировка повторного использования VLAN 40.
+   - Теперь прямо в веб-морде (**Support -> Service WAN VLANs**) можно переключить VLAN 40 в **Layer 2 Bridged** и выбрать нужный LAN-порт (LAN1–LAN4).
+2. **Нейтрализует TR-069 (Auto-Configuration Server):**
+   - Останавливает службу `cwmpmain`.
+   - В `/etc/hosts` прописывает заглушку для `hdm.telecom.kz`.
+3. **Блокирует сброс параметров через OMCI (сохраняя телефонию!):**
+   - Дефолтная битовая маска в `/etc/omci/omcienv.xml` — `0x1fff`. В ней выставлены биты `rgvlan_del_nonauto` и `rgvlan_ip_assign`, которые принуждают модем стирать мосты при аудите с OLT.
+   - Патч меняет маску на безопасную: `0x0ff3`. Мосты больше не удаляются, а казахтелекомовский SIP (`iphost` на `pon1.4090`) **продолжает штатно работать!**
+4. **Разблокирует порты свитча:**
+   - Снимает заводскую блокировку портов 0–3 и изоляцию между ними.
 
-Подключитесь к Calix по SSH (`ssh support@192.168.1.1`, пароль `support`) и выполните одну команду:
+---
 
-### Через `curl`:
+## Инструкция по установке патча
+
+### Шаг 1. Подключение по SSH к Calix
+Подключаемся к терминалу (по умолчанию IP `192.168.1.1`):
+```bash
+ssh support@192.168.1.1
+```
+*(Пароль по умолчанию: `support`)*
+
+### Шаг 2. Загрузка и запуск патча
+Создаем скрипт патча:
 ```sh
-curl -ksSL https://raw.githubusercontent.com/riverkz/calix/refs/heads/main/bridge/install.sh | sh
-```
+cat > /tmp/calix_patch.sh << 'EOF'
+#!/bin/sh
+set -e
 
-### Через `wget`:
-```sh
-wget -qO- --no-check-certificate https://raw.githubusercontent.com/riverkz/calix/refs/heads/main/bridge/install.sh | sh
-```
+# 1. TR-069
+/etc/init.d/cwmp.sh stop 2>/dev/null || true
+killall -9 cwmpmain 2>/dev/null || true
+sed -i 's/cwmp_enable=1/cwmp_enable=0/g' /etc/wwwctrl/metafile.dat 2>/dev/null || true
+sed -i 's/wan1_service_cwmp=1/wan1_service_cwmp=0/g' /etc/wwwctrl/metafile.dat 2>/dev/null || true
+grep -q "hdm.telecom.kz" /etc/hosts || echo "127.0.0.1 hdm.telecom.kz" >> /etc/hosts
 
----
+# 2. OMCI Protection
+mkdir -p /etc/omci
+cat > /etc/omci/custom_env << 'EOENV'
+batchtab_wanif_feature 0x0ff3
+mib_uni_adminlock_default 0
+EOENV
 
-## 🎯 Что решает этот проект?
+sed -i 's/<batchtab_wanif_feature>.*<\/batchtab_wanif_feature>/<batchtab_wanif_feature>0x0ff3<\/batchtab_wanif_feature>/g' /etc/omci/omcienv.xml 2>/dev/null || true
+sed -i 's/<mib_uni_adminlock_default>.*<\/mib_uni_adminlock_default>/<mib_uni_adminlock_default>0<\/mib_uni_adminlock_default>/g' /etc/omci/omcienv.xml 2>/dev/null || true
+omcicli -c "env batchtab_wanif_feature 0x0ff3" 2>/dev/null || true
+omcicli -c "env mib_uni_adminlock_default 0" 2>/dev/null || true
 
-У абонентов GPON Казахтелекома и других провайдеров, использующих ONT Calix, стандартно возникают следующие проблемы:
-1. **Скрыт мост в веб-интерфейсе:** Для дефолтного профиля интернета (`is_dcs=1`, VLAN 40) вендор принудительно скрывает радиокнопку `Layer 2 Bridged`.
-2. **Агрессивный TR-069:** Демон `cwmpmain` постоянно рапортует на `hdm.telecom.kz` и откатывает конфиг.
-3. **OMCI MIB Audit Reset:** При проверке конфигурации с OLT демон `omcimain` (битовая маска `0x1fff`) сносит любые пользовательские мосты обратно в `layer3routed`.
-4. **Падение телефонии:** При наивных попытках отключить OMCI отваливается SIP VoIP Казахтелекома.
-5. **Изоляция портов:** Аппаратный свитч изолирует порты LAN, не пропуская локальный трафик.
+# 3. LAN Switch Unlocking & De-isolation
+diag port set port 0-3 state enable 2>/dev/null || true
+diag port set port 0-3 link-up enable 2>/dev/null || true
+diag port set port 0-3 isolation-set 0 2>/dev/null || true
 
-### Решение:
-* **Anti-Reset OMCI (`0x0ff3`):** Отключает биты `rgvlan_del_nonauto` и `rgvlan_ip_assign`, блокируя удаление мостов, но **сохраняет `iphost` — казахтелекомовская SIP-телефония на `pon1.4090` продолжает работать!**
-* **Отключение TR-069:** Служба глушится, а ACS Казахтелекома отправляется на `127.0.0.1`.
-* **Разблокировка Web UI:** Кнопка «Layer 2 Bridged» открывается прямо в родной админке (**Support -> Service WAN VLANs**), а блокировка повторного использования VLAN снимается.
-* **Снятие аппаратной изоляции:** Все порты 0–3 открываются на уровне чипа Realtek.
-* **Утилита `calix` в системе:** Удобное управление из консоли.
+# 4. Web UI Patch
+HTML="/opt/httpd/data/pages/support/support_wan_setting_ipv6.html"
+CMD="/opt/httpd/data/cgi-bin/service_wan_vlan_setting.cmd"
+[ -f "$HTML" ] && sed -i 's/hidden_elem: \[".ipv4_dake"\]/hidden_elem: \[\]/g' "$HTML"
+[ -f "$CMD" ] && sed -i 's/echo "This Vlan ID has been used, Please choose another one." && exit/# echo "VLAN allowed" #/' "$CMD"
 
----
+sync; sync
+echo "CALIX_PATCH_SUCCESS"
+EOF
 
-## 🛠️ Управление через CLI (Консоль)
-
-После установки в системе доступна утилита `calix`:
-
-```sh
-# Пробросить VLAN 40 на порт LAN2 (режим Bridge)
-calix bridge 40 2
-
-# Вернуть режим роутера (Layer 3 Routed)
-calix route 40
-
-# Проверить статус моста, WAN и телефонии
-calix status
-
-# Показать уровень оптического сигнала (BOSA RX/TX power)
-calix optical
-
-# Разблокировать все 4 порта LAN
-calix unlock
+sh /tmp/calix_patch.sh
 ```
 
 ---
 
-## 🌐 Управление через Веб-интерфейс (GUI)
+## Как включить Bridge через админку (GUI)
 
-1. Откройте `http://192.168.1.1` в браузере.
-2. Перейдите в **Support -> Service WAN VLANs**.
-3. Нажмите **Edit** напротив `ipoe_veip1-40`.
-4. В графе **Connection Type** выберите **Layer 2 Bridged**.
-5. Выберите нужный физический порт (например, `Ethernet Port 2`).
-6. Нажмите **Apply**.
-
----
-
-## 📡 Настройка вашего роутера за Calix (Option 60)
-
-Казахтелеком выдает внешний белый IP по DHCP (IPoE) только при наличии **Option 60 (Vendor Class Identifier)**.
-
-| Параметр | Значение |
-| :--- | :--- |
-| **Option 60 (Vendor Class Identifier)** | `813Gv2-2.ONT.dslforum.org` |
-| **Option 12 (Host name)** | `813Gv2-2` |
-
-Готовые конфигурации для популярных систем:
-* [Keenetic](configs/keenetic.md)
-* [MikroTik RouterOS](configs/mikrotik.rsc)
-* [OpenWrt](configs/openwrt.sh)
-* [Linux (dhclient)](configs/linux_dhclient.conf)
+1. Открываем браузер: `http://192.168.1.1`
+2. Переходим в меню: **Support -> Service WAN VLANs**
+3. Нажимаем **Edit** напротив `ipoe_veip1-40` (или нужного VLAN).
+4. В графе **Connection Type** теперь доступен пункт **Layer 2 Bridged**! Выбираем его.
+5. В появившемся списке выбираем физический порт (например, `Ethernet Port 2`).
+6. Нажимаем **Apply**.
 
 ---
 
-## 📦 Структура репозитория
+## Альтернатива: перевод в мост одной командой из консоли (CLI)
 
-```
-├── install.sh                  # One-liner установщик для curl/wget
-├── uninstall.sh                # Скрипт полного отката к заводскому состоянию
-├── calix_super_patch.sh        # Исходный скрипт патча
-├── calix_cli_bridge.sh         # Исходный скрипт утилиты calix
-├── FORUM_POST_GUIDE.md         # Готовый текст для публикации на форумах (4PDA/Habr)
-├── tools/
-│   └── decrypt_backup.py       # Оффлайн дешифратор/шифратор бэкапов backupsettings.conf
-└── configs/
-    ├── keenetic.md             # Инструкция для Keenetic
-    ├── mikrotik.rsc            # Скрипт для MikroTik
-    ├── openwrt.sh              # Скрипт для OpenWrt
-    └── linux_dhclient.conf     # Конфиг dhclient для Linux
-```
-
----
-
-## 🔄 Как откатить назад?
-
-Если вам нужно вернуть терминал в полностью исходное заводское состояние (например, перед визитом монтера или сдачей оборудования):
+Если лень заходить в браузер, можно перевести VLAN в мост прямо из SSH Calix:
 
 ```sh
-curl -ksSL https://raw.githubusercontent.com/riverkz/calix/refs/heads/main/bridge/uninstall.sh | sh
+# Синтаксис: bridge <VLAN_ID> <НОМЕР_LAN_ПОРТА 1-4>
+# Пример: пробросить VLAN 40 Казахтелекома на LAN2:
+
+cat > /tmp/bridge.dat << EOF
+dev_wan1_interface=brwan1.40
+wan1_enable=0
+wan1_if_name=
+brwan1_enable=1
+brwan1_name=bridge_lan2_40
+brwan1_vid=40
+brwan1_pbit=0
+brwan1_portmask=0x2
+brwan1_wifimask=0
+brwan1_igmp_enable=0
+EOF
+/etc/init.d/cmd_dispatcher.sh diff /tmp/bridge.dat
+diag port set port 0-3 isolation-set 0
+sync; sync
 ```
-Скрипт восстановит оригинальные файлы веб-интерфейса, вернет дефолтную маску OMCI `0x1fff`, запустит TR-069 и восстановит режим роутера.
 
 ---
 
-## ⚠️ Отказ от ответственности (Disclaimer)
-Все действия вы выполняете на свой страх и риск. Автор не несет ответственности за возможные санкции со стороны провайдера.
+## ВАЖНО: Настройка роутера за Calix'ом (DHCP Option 60)
+
+Казахтелеком для выдачи белого публичного IP по IPoE (DHCP) требует наличие **Option 60 (Vendor Class Identifier)**.
+
+На вашем роутере, который подключен в выбранный LAN-порт Calix:
+- **Тип подключения:** DHCP (IPoE / Динамический IP)
+- **Option 60 (Идентификатор класса поставщика / Vendor ID):**
+  ```text
+  813Gv2-2.ONT.dslforum.org
+  ```
+- **Option 12 (Host name):**
+  ```text
+  813Gv2-2
+  ```
+
+В **Keenetic**: в настройках интерфейса «Провайдер» в поле «Имя хоста / Vendor-class» указываем `813Gv2-2.ONT.dslforum.org`.
+В **Mikrotik**: в `/ip dhcp-client option` добавляем опцию 60 (`0x3c` -> `'813Gv2-2.ONT.dslforum.org'`).
+В **Linux/Debian** (`dhclient.conf`):
+```text
+send vendor-class-identifier "813Gv2-2.ONT.dslforum.org";
+send host-name "813Gv2-2";
+```
+
+После этого ваш личный роутер моментально забирает белый IP Казахтелекома. Никаких дропов, никаких переписываний конфига, интернет работает на полной скорости оптики!
