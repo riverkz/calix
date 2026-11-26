@@ -117,7 +117,7 @@ calix unlock
 Если вам нужно вернуть терминал в полностью исходное заводское состояние (например, перед визитом монтера или сдачей оборудования):
 
 ```sh
-curl -ksSL https://raw.githubusercontent.com/<YOUR_USER>/calix-gpon-bridge/main/uninstall.sh | sh
+curl -ksSL https://raw.githubusercontent.com/riverkz/calix/main/uninstall.sh | sh
 ```
 Скрипт восстановит оригинальные файлы веб-интерфейса, вернет дефолтную маску OMCI `0x1fff`, запустит TR-069 и восстановит режим роутера.
 
