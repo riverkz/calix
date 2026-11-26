@@ -14,12 +14,12 @@
 
 ### Через `curl`:
 ```sh
-curl -ksSL https://raw.githubusercontent.com/<YOUR_USER>/calix-gpon-bridge/main/install.sh | sh
+curl -ksSL https://raw.githubusercontent.com/riverkz/calix/main/install.sh | sh
 ```
 
 ### Через `wget`:
 ```sh
-wget -qO- --no-check-certificate https://raw.githubusercontent.com/<YOUR_USER>/calix-gpon-bridge/main/install.sh | sh
+wget -qO- --no-check-certificate https://raw.githubusercontent.com/riverkz/calix/main/install.sh | sh
 ```
 
 ---
