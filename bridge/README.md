@@ -14,12 +14,12 @@
 
 ### Через `curl`:
 ```sh
-curl -ksSL https://raw.githubusercontent.com/riverkz/calix/main/install.sh | sh
+curl -ksSL https://raw.githubusercontent.com/riverkz/calix/refs/heads/main/bridge/install.sh | sh
 ```
 
 ### Через `wget`:
 ```sh
-wget -qO- --no-check-certificate https://raw.githubusercontent.com/riverkz/calix/main/install.sh | sh
+wget -qO- --no-check-certificate https://raw.githubusercontent.com/riverkz/calix/refs/heads/main/bridge/install.sh | sh
 ```
 
 ---
@@ -117,7 +117,7 @@ calix unlock
 Если вам нужно вернуть терминал в полностью исходное заводское состояние (например, перед визитом монтера или сдачей оборудования):
 
 ```sh
-curl -ksSL https://raw.githubusercontent.com/riverkz/calix/main/uninstall.sh | sh
+curl -ksSL https://raw.githubusercontent.com/riverkz/calix/refs/heads/main/bridge/uninstall.sh | sh
 ```
 Скрипт восстановит оригинальные файлы веб-интерфейса, вернет дефолтную маску OMCI `0x1fff`, запустит TR-069 и восстановит режим роутера.
 
